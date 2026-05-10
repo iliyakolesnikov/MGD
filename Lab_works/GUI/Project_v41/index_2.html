@@ -328,15 +328,32 @@ body.resizing #map {
   font-weight: 600;
   flex: 1;
 }
-#ip-close {
+#ip-close, .ip-action {
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 20px;
+  font-size: 16px;
   cursor: pointer;
   line-height: 1;
+  padding: 0 2px;
 }
-#ip-close:hover { color: var(--accent); }
+#ip-close { font-size: 20px; }
+#ip-close:hover, .ip-action:hover { color: var(--accent); }
+#ip-actions { display: flex; align-items: center; gap: 4px; }
+#ip-toast {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 10px;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+  white-space: nowrap;
+}
 #ip-type {
   font-size: 11px;
   color: var(--accent);
@@ -558,8 +575,13 @@ body.resizing #map {
   <div id="info-panel">
     <div id="ip-header">
       <h2 id="ip-title"></h2>
-      <button id="ip-close">×</button>
+      <div id="ip-actions">
+        <button class="ip-action" id="ip-copy" title="Копировать координаты">📋</button>
+        <button class="ip-action" id="ip-maps" title="Открыть в Яндекс.Картах">🧭</button>
+        <button id="ip-close">×</button>
+      </div>
     </div>
+    <div id="ip-toast">Скопировано</div>
     <div id="ip-type"></div>
     <div id="ip-tabs">
       <div class="ip-tab active" data-tab="params">Параметры</div>
@@ -578,6 +600,7 @@ body.resizing #map {
   <span id="sb-zoom">МАСШТАБ: 11</span>
 </div>
 
+<script src="config.js"></script>
 <script src="mjd_infra_data.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
@@ -809,7 +832,7 @@ const TYPE_LABEL = {
 };
 
 // ===== ЯНДЕКС РАСПИСАНИЯ API =====
-const YANDEX_API_KEY = '00ea1e09-dc56-4610-8d13-e1251570f6f3';
+const YANDEX_API_KEY = window.MJD_CONFIG?.YANDEX_API_KEY || '';
 const YANDEX_BASE = 'https://api.rasp.yandex.net/v3';
 
 // Коды станций Яндекс.Расписаний (9900xxx — вокзалы Москвы)
@@ -1130,7 +1153,7 @@ function rnd(a,b) { return Math.floor(Math.random()*(b-a+1))+a; }
 
 function renderLive(body) {
   const o = currentObj;
-  let html = '<div style="margin-bottom:8px"><span class="live-dot"></span><span style="color:var(--live-color);font-size:11px">LIVE · обновление каждые 3 мин</span></div>';
+  let html = '<div style="margin-bottom:8px;padding:6px 8px;background:rgba(180,120,0,.15);border:1px solid rgba(180,120,0,.4);font-size:11px;color:#c8960a"><b>⚠ DEMO-ДАННЫЕ</b> · цифры случайны, не для оперативного применения</div>';
   html += '<div class="ip-grid">';
   if (o.type === 'station') {
     html += kv('Поездов сейчас', rnd(4,14));
@@ -1221,6 +1244,22 @@ document.getElementById('ip-close').addEventListener('click', () => {
   currentObj = null;
 });
 
+// Копировать координаты
+document.getElementById('ip-copy').addEventListener('click', () => {
+  if (!currentObj) return;
+  navigator.clipboard.writeText(`${currentObj.lat}, ${currentObj.lng}`).then(() => {
+    const toast = document.getElementById('ip-toast');
+    toast.style.opacity = '1';
+    setTimeout(() => { toast.style.opacity = '0'; }, 1800);
+  });
+});
+
+// Открыть в Яндекс.Картах
+document.getElementById('ip-maps').addEventListener('click', () => {
+  if (!currentObj) return;
+  window.open(`https://yandex.ru/maps/?pt=${currentObj.lng},${currentObj.lat}&z=16&l=map`, '_blank');
+});
+
 // ===== ФИЛЬТРЫ =====
 const LAYER_MAP = {
   stations: 'stations',
@@ -1236,6 +1275,31 @@ const LAYER_MAP = {
   halt: 'halt',
   node: 'node',
 };
+function saveFilters() {
+  const state = {};
+  document.querySelectorAll('#filters-wrap input[type="checkbox"]').forEach(cb => {
+    state[cb.dataset.layer] = cb.checked;
+  });
+  localStorage.setItem('mjd-filters', JSON.stringify(state));
+}
+
+function applyFilters() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('mjd-filters') || '{}'); } catch(e) {}
+  document.querySelectorAll('#filters-wrap input[type="checkbox"]').forEach(cb => {
+    const key = cb.dataset.layer;
+    if (key in saved) {
+      cb.checked = saved[key];
+      const layers = LAYER_MAP[key];
+      const arr = Array.isArray(layers) ? layers : [layers];
+      arr.forEach(lg => {
+        if (cb.checked) LG[lg].addTo(map);
+        else map.removeLayer(LG[lg]);
+      });
+    }
+  });
+}
+
 document.querySelectorAll('#filters-wrap input[type="checkbox"]').forEach(cb => {
   cb.addEventListener('change', () => {
     const key = cb.dataset.layer;
@@ -1245,8 +1309,10 @@ document.querySelectorAll('#filters-wrap input[type="checkbox"]').forEach(cb => 
       if (cb.checked) LG[lg].addTo(map);
       else map.removeLayer(LG[lg]);
     });
+    saveFilters();
   });
 });
+applyFilters();
 
 // Выпадающий список фильтров
 document.getElementById('filters-toggle').addEventListener('click', () => {
@@ -1260,12 +1326,20 @@ document.getElementById('filters-toggle').addEventListener('click', () => {
 const searchInput = document.getElementById('search-input');
 const searchResults = document.getElementById('search-results');
 
+// Предварительный индекс для быстрого поиска
+const SEARCH_INDEX = ALL.map(o => ({
+  ...o,
+  _norm: o.name.toLowerCase().replace(/ё/g, 'е'),
+  _type: TYPE_LABEL[o.type].toLowerCase()
+}));
+
+let searchDebounce = null;
 searchInput.addEventListener('input', () => {
-  const q = searchInput.value.trim().toLowerCase();
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+  const q = searchInput.value.trim().toLowerCase().replace(/ё/g, 'е');
   if (!q) { searchResults.classList.remove('show'); return; }
-  const hits = ALL.filter(o =>
-    o.name.toLowerCase().includes(q) || TYPE_LABEL[o.type].toLowerCase().includes(q)
-  );
+  const hits = SEARCH_INDEX.filter(o => o._norm.includes(q) || o._type.includes(q));
   if (hits.length === 0) {
     searchResults.innerHTML = '<div class="sr-item"><span class="sr-name" style="color:var(--text-muted)">Ничего не найдено</span></div>';
     searchResults.classList.add('show');
@@ -1275,6 +1349,7 @@ searchInput.addEventListener('input', () => {
     `<div class="sr-item" data-id="${o.id}"><span class="sr-name">${o.name}</span><br><span class="sr-type">${TYPE_LABEL[o.type]}</span></div>`
   ).join('');
   searchResults.classList.add('show');
+  }, 200); // debounce 200ms
 });
 
 searchResults.addEventListener('click', e => {
@@ -1338,6 +1413,31 @@ function setupSidebarResize() {
   bindHandle(leftHandle, left, 'left');
 }
 setupSidebarResize();
+
+// ===== ЗУМ-ЗАВИСИМАЯ ВИДИМОСТЬ =====
+function updateZoomVisibility() {
+  const z = map.getZoom();
+  // Читаем текущее состояние чекбоксов фильтров
+  const haltOn  = document.querySelector('[data-layer="halt"]')?.checked ?? true;
+  const nodeOn  = document.querySelector('[data-layer="node"]')?.checked ?? true;
+  const passOn  = document.querySelector('[data-layer="pass"]')?.checked ?? true;
+
+  if (z < 11) {
+    if (haltOn)  map.removeLayer(LG.halt);
+    if (nodeOn)  map.removeLayer(LG.node);
+    if (passOn)  map.removeLayer(LG.pass);
+  } else if (z < 13) {
+    if (haltOn)  map.removeLayer(LG.halt);
+    if (nodeOn)  LG.node.addTo(map);
+    if (passOn)  LG.pass.addTo(map);
+  } else {
+    if (haltOn)  LG.halt.addTo(map);
+    if (nodeOn)  LG.node.addTo(map);
+    if (passOn)  LG.pass.addTo(map);
+  }
+}
+map.on('zoomend', updateZoomVisibility);
+updateZoomVisibility();
 
 // ===== СТАТУС-СТРОКА =====
 function mskTime() {
